@@ -3,10 +3,10 @@ from snowflake.snowpark.context import get_active_session
 import pandas as pd
 import time
 
-st.title("Benchmark Response Times ⚡")
+st.title("Snowflake Benchmark App ⚡")
 st.write("""
-Benchmark up to 6 Snowflake tables using MINUS, LEFT JOIN, or HASH JOIN.
-Select the query type and join key, then view results and trends.
+Benchmark up to 6 Snowflake tables using `MINUS`, `LEFT JOIN`, or `HASH JOIN`.
+Select the `Query type` and `Join key`, then view results and trends.
 """)
 
 # Active session
@@ -25,8 +25,11 @@ selected_tables = st.multiselect("Select up to 6 benchmark tables", tables, max_
 query_type = st.selectbox("Query type", ["MINUS", "LEFT JOIN", "HASH JOIN"])
 join_key = st.selectbox("Join key", ["PATIENT_ID", "GUID"])
 
-# Benchmark logic
-def benchmark_table(table, query_type, join_key):
+# Warm up warehouse
+session.sql("SELECT 1").collect()
+
+# Benchmark logic with averaging
+def benchmark_table(table, query_type, join_key, trials=3):
     if query_type == "MINUS":
         query = f"""
             SELECT COUNT(*) FROM (
@@ -53,10 +56,15 @@ def benchmark_table(table, query_type, join_key):
     else:
         raise ValueError("Unsupported query type")
 
-    start = time.time()
-    _ = session.sql(query).collect()
-    end = time.time()
-    return round(end - start, 2)
+    durations = []
+    for _ in range(trials):
+        start = time.time()
+        _ = session.sql(query).collect()
+        end = time.time()
+        durations.append(end - start)
+
+    avg_duration = round(sum(durations) / trials, 2)
+    return avg_duration
 
 # Run benchmark
 if st.button("Run Benchmark") and selected_tables:
