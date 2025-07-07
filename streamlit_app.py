@@ -13,7 +13,7 @@ Select the query type and join key, then view results and trends.
 session = get_active_session()
 
 # Cache table names
-# @st.cache_data
+@st.cache_data
 def get_table_names():
     rows = session.sql("SHOW TABLES IN MOHAMED_SHEZ").collect()
     return sorted([r["name"] for r in rows if r["name"].startswith("RESPONSE_TIME_")])
@@ -40,7 +40,6 @@ def benchmark_table(table, query_type, join_key):
             SELECT COUNT(*) FROM MOHAMED_SHEZ.{table} t1
             LEFT JOIN MOHAMED_SHEZ.{table} t2
               ON t1.{join_key} = t2.{join_key}
-             AND t1.$1 = t2.$1
             WHERE t2.{join_key} IS NULL
         """
     elif query_type == "HASH JOIN":
@@ -84,11 +83,12 @@ if st.button("Run Benchmark") and selected_tables:
 
     df_results = pd.DataFrame(results)
 
-    st.subheader("Benchmark Duration")
-    st.line_chart(data=df_results, x="Row Count", y="Duration (s)", color="Table")
-
     st.subheader("Benchmark Table")
     st.dataframe(df_results, use_container_width=True)
+
+    st.subheader("Benchmark Duration Chart")
+    chart_data = df_results[["Row Count", "Duration (s)"]].set_index("Row Count")
+    st.line_chart(chart_data)
 
     st.download_button("Download CSV", df_results.to_csv(index=False), "benchmark_results.csv")
 else:
