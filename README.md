@@ -4,6 +4,7 @@ This is a Streamlit-based benchmarking tool designed to measure query performanc
 - `MINUS`
 - `LEFT JOIN`
 - `HASH JOIN`
+- `SIMPLE COUNT`
 
 ## 🔧 Features
 - Select up to 6 `RESPONSE_TIME_*` tables to benchmark
@@ -123,6 +124,7 @@ The results of the benchmarks are stored in a Snowflake table called `BENCHMARK_
 | LEFT JOIN   | One or more columns  | Key-based record matching              | Fast if join keys are indexed               |
 | MINUS       | All columns          | Full row diffing (structural match)   | Slower due to full row comparison           |
 | HASH JOIN   | Row hash (HASH(*))  | Lightweight full row comparison        | Faster than MINUS but depends on hash logic |
+| SIMPLE COUNT | Count of rows        | Quick row count comparison             | Fast, but does not provide row-level detail |
 
 ### 5. 📈 Visualisations
 The app includes interactive charts to visualize the benchmark results, making it easy to compare performance across different query types and datasets.
