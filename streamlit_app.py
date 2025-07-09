@@ -87,12 +87,13 @@ st.markdown("""
 # Filter input
 filter_text = st.text_input("🔍 Filter tables (by name, db, or schema)", "")
 filtered_tables = [t for t in all_fq_tables if filter_text.lower() in t.lower()]
+valid_selected_tables = [t for t in st.session_state.get("selected_tables", []) if t in filtered_tables]
 
 # Table selection
 selected_tables = st.multiselect(
     "Select up to 6 tables (fully qualified)",
     filtered_tables,
-    default=st.session_state.get("selected_tables", []),
+    default=valid_selected_tables,
     max_selections=6,
     key="selected_tables"
 )
