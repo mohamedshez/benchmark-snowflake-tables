@@ -94,7 +94,14 @@ selected_tables = st.multiselect(
 # --- Summary Display ---
 if selected_tables:
     st.markdown("### ✅ Selected Tables Summary")
-    st.dataframe(pd.DataFrame({"Selected Tables": selected_tables}), use_container_width=True)
+    st.dataframe(
+        pd.DataFrame({"Selected Tables": selected_tables})
+        .reset_index(drop=True)
+        .rename_axis("No.")
+        .set_index(pd.Index(range(1, len(selected_tables) + 1))),
+        use_container_width=True,
+        hide_index=False
+    )
 
 # --- Query type ---
 query_type = st.selectbox(
