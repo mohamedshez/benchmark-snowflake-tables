@@ -1,19 +1,29 @@
 import streamlit as st
 from snowflake.snowpark.context import get_active_session
+from utils.connection_utils import connect_to_snowflake
 import pandas as pd
 import time
 
+st.set_page_config(page_title="Snowflake Benchmark App ⚡", layout="wide")
+
+with st.spinner("Connecting to Snowflake..."):
+    session = connect_to_snowflake()
+
+if not session:
+    st.error("Unable to connect to Snowflake.")
+    st.stop()
+
 st.title("Snowflake Benchmark App ⚡")
 st.write("""
-Benchmark up to 6 Snowflake tables using `SIMPLE COUNT`, `MINUS`, `LEFT JOIN`, or `HASH JOIN`.
+Benchmark up to 6 Snowflake tables using `SIMPLE COUNT`, `MINUS`, `LEFT JOIN`, or `HASH JOIN`.  
 Select the `Query type` and `Join key`, then view results and trends.
 """)
 st.markdown("""
 **Query Types Explained**  
-- **SIMPLE COUNT**: Measures raw scan performance by counting all rows in a table. Useful for I/O benchmarking without comparisons.  
-- **MINUS**: Compares two identical datasets and returns rows from the first that are **not present** in the second. Ideal for detecting changes or mismatches between snapshots.  
-- **LEFT JOIN**: Joins two versions of the same table using a specified key (e.g., `GUID` or `PATIENT_ID`) and filters for rows **missing in the right table**. Great for tracking unmatched records.  
-- **HASH JOIN**: Compares tables by generating a hash of each row and checking for differences. Efficient for deep row comparisons without inspecting individual columns.
+- **SIMPLE COUNT**: Measures raw scan performance by counting all rows in a table.  
+- **MINUS**: Returns rows from the first table that are not in the second — useful for detecting mismatches.  
+- **LEFT JOIN**: Finds unmatched rows using join keys — great for change detection.  
+- **HASH JOIN**: Hashes and compares rows — good for detecting any content-level changes.
 """)
 
 # --- Initialise session ---
@@ -22,73 +32,87 @@ session.sql("SELECT 1").collect()  # Warm up the warehouse
 
 # --- Cached metadata queries ---
 @st.cache_data
-def get_databases():
-    rows = session.sql("SHOW DATABASES").collect()
-    return sorted([r["name"] for r in rows])
+def get_hierarchical_table_map():
+    rows = session.sql("""
+        SELECT table_catalog AS db, table_schema AS schema, table_name
+        FROM information_schema.tables
+        WHERE table_type = 'BASE TABLE'
+        ORDER BY db, schema, table_name
+    """).collect()
+
+    # Build nested structure: {db: {schema: [tables]}}
+    tree = {}
+    fq_list = []
+    for r in rows:
+        db, schema, table = r["DB"], r["SCHEMA"], r["TABLE_NAME"]
+        fq = f"{db}.{schema}.{table}"
+        fq_list.append(fq)
+        tree.setdefault(db, {}).setdefault(schema, []).append(fq)
+    return tree, fq_list
 
 @st.cache_data
-def get_schemas(database):
-    rows = session.sql(f"SHOW SCHEMAS IN DATABASE {database}").collect()
-    return sorted([r["name"] for r in rows])
-
-@st.cache_data
-def get_tables(database, schema):
-    query = f"""
-        SELECT table_name 
-        FROM {database}.information_schema.tables 
-        WHERE table_schema = '{schema}'
-        ORDER BY table_name
-    """
-    rows = session.sql(query).collect()
-    return [r["TABLE_NAME"] for r in rows]
-
-@st.cache_data
-def get_columns(database, schema, table):
-    if not (database and schema and table):
+def get_columns_fq(fq_table_name):
+    parts = fq_table_name.split(".")
+    if len(parts) != 3:
         return []
-    rows = session.sql(f"SHOW COLUMNS IN {database}.{schema}.{table}").collect()
+    db, schema, table = parts
+    rows = session.sql(f"SHOW COLUMNS IN {db}.{schema}.{table}").collect()
     return [r["column_name"] for r in rows]
 
-# Database selection
-databases = get_databases()
-selected_db = st.selectbox("Select Database", databases, index=None, key="selected_db")
+# --- Get hierarchical structure and table list ---
+table_tree, all_fq_tables = get_hierarchical_table_map()
 
-# Schema selection
-schemas = get_schemas(selected_db) if selected_db else []
-selected_schema = st.selectbox("Select Schema", schemas, index=None, key="selected_schema")
+# --- Widen multiselect dropdown ---
+st.markdown("""
+    <style>
+    .stMultiSelect > div > div {
+        width: 100% !important;
+        min-width: 500px;
+    }
+    </style>
+""", unsafe_allow_html=True)
 
-# Table selection
-tables = get_tables(selected_db, selected_schema) if selected_db and selected_schema else []
-previous_selected_tables = [
-    t for t in st.session_state.get("selected_tables", []) if t in tables
-]
+# --- Optional filter ---
+filter_text = st.text_input("🔍 Filter tables (by name, db, or schema)", "")
 
-# If no valid selections remain, reset the session state for selected_tables
-if not previous_selected_tables and st.session_state.get("selected_tables"):
-    st.session_state["selected_tables"] = []
+flat_table_options = []
+for db, schemas in table_tree.items():
+    for schema, tables in schemas.items():
+        for fq in tables:
+            if filter_text.lower() in fq.lower():
+                flat_table_options.append(fq)
 
+# --- Table selection ---
 selected_tables = st.multiselect(
-    "Select up to 6 tables", tables,
+    "Select up to 6 fully qualified tables (db.schema.table)",
+    flat_table_options,
     default=st.session_state.get("selected_tables", []),
     max_selections=6,
     key="selected_tables"
 )
 
-# Query type
+# --- Summary Display ---
+if selected_tables:
+    st.markdown("### ✅ Selected Tables Summary")
+    st.dataframe(pd.DataFrame({"Selected Tables": selected_tables}), use_container_width=True)
+
+# --- Query type ---
 query_type = st.selectbox(
     "Query type", ["SIMPLE COUNT", "MINUS", "LEFT JOIN", "HASH JOIN"],
     index=None, key="query_type"
 )
 
-# Join key selection (only if LEFT JOIN)
+# --- Join key (only for LEFT JOIN) ---
 join_key = None
-if query_type == "LEFT JOIN" and selected_tables and selected_db and selected_schema:
-    join_key_options = get_columns(selected_db, selected_schema, selected_tables[0])
+if query_type == "LEFT JOIN" and selected_tables:
+    example_table = selected_tables[0]
+    join_key_options = get_columns_fq(example_table)
     join_key = st.selectbox("Join key", join_key_options, index=None, key="join_key")
 
 # --- Benchmark function ---
-def benchmark_table(database, schema, table, query_type, join_key, trials=3):
-    full_table = f"{database}.{schema}.{table}"
+def benchmark_table(fq_table, query_type, join_key, trials=3):
+    db, schema, table = fq_table.split(".")
+    full_table = f"{db}.{schema}.{table}"
 
     if query_type == "MINUS":
         query = f"""
@@ -129,16 +153,14 @@ def benchmark_table(database, schema, table, query_type, join_key, trials=3):
     avg_duration = round(sum(durations) / trials, 2)
     return avg_duration
 
-# --- Ensure session state initialised
+# --- Session state ---
 if "stop_benchmark" not in st.session_state:
     st.session_state.stop_benchmark = False
 
-# --- Add Buttons side by side ---
+# --- Side-by-side buttons ---
 col1, col2 = st.columns(2)
-
 with col1:
     run_clicked = st.button("🚀 Run Benchmark")
-
 with col2:
     stop_clicked = st.button("🛑 Stop Benchmark")
     if stop_clicked:
@@ -148,25 +170,23 @@ with col2:
 if run_clicked and selected_tables:
     st.session_state.stop_benchmark = False
     results = []
-    for table in selected_tables:
+    for fq_table in selected_tables:
         if st.session_state.stop_benchmark:
             st.warning("Benchmark stopped by user.")
             break
-        with st.spinner(f"Benchmarking {table}..."):
+        with st.spinner(f"Benchmarking {fq_table}..."):
             try:
-                duration = benchmark_table(
-                    selected_db, selected_schema, table,
-                    query_type, join_key
-                )
-                row_count = session.table(f"{selected_db}.{selected_schema}.{table}").count()
+                duration = benchmark_table(fq_table, query_type, join_key)
+                row_count = session.table(fq_table).count()
                 results.append({
-                    "Table": table,
+                    "Table": fq_table,
                     "Row Count": row_count,
                     "Query Type": query_type,
+                    "Join Key": join_key or "",
                     "Duration (s)": duration
                 })
             except Exception as e:
-                st.error(f"Error benchmarking {table}: {e}")
+                st.error(f"Error benchmarking {fq_table}: {e}")
                 continue
 
     if results:
