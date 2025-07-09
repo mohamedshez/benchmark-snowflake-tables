@@ -3,15 +3,35 @@ from snowflake.snowpark.context import get_active_session
 from utils.connection_utils import connect_to_snowflake
 import pandas as pd
 import time
+from datetime import datetime
 
 st.set_page_config(page_title="Snowflake Benchmark App ⚡", layout="wide")
 
+# --- Connect to Snowflake ---
 with st.spinner("Connecting to Snowflake..."):
     session = connect_to_snowflake()
 
 if not session:
     st.error("Unable to connect to Snowflake.")
     st.stop()
+
+# Ensure logging table exists
+def ensure_benchmark_logs_table():
+    try:
+        session.sql("""
+            CREATE TABLE IF NOT EXISTS BENCHMARK_LOGS (
+                timestamp TIMESTAMP,
+                table_name STRING,
+                row_count INTEGER,
+                query_type STRING,
+                join_key STRING,
+                duration_s FLOAT
+            )
+        """).collect()
+    except Exception as e:
+        print("Warning: Could not ensure BENCHMARK_LOGS table:", e)
+
+ensure_benchmark_logs_table()
 
 st.title("Snowflake Benchmark App ⚡")
 st.write("""
@@ -26,11 +46,7 @@ st.markdown("""
 - **HASH JOIN**: Hashes and compares rows — good for detecting any content-level changes.
 """)
 
-# --- Initialise session ---
-session = get_active_session()
-session.sql("SELECT 1").collect()  # Warm up the warehouse
-
-# --- Cached metadata queries ---
+# --- Metadata utilities ---
 @st.cache_data
 def get_hierarchical_table_map():
     rows = session.sql("""
@@ -40,7 +56,6 @@ def get_hierarchical_table_map():
         ORDER BY db, schema, table_name
     """).collect()
 
-    # Build nested structure: {db: {schema: [tables]}}
     tree = {}
     fq_list = []
     for r in rows:
@@ -52,17 +67,14 @@ def get_hierarchical_table_map():
 
 @st.cache_data
 def get_columns_fq(fq_table_name):
-    parts = fq_table_name.split(".")
-    if len(parts) != 3:
-        return []
-    db, schema, table = parts
+    db, schema, table = fq_table_name.split(".")
     rows = session.sql(f"SHOW COLUMNS IN {db}.{schema}.{table}").collect()
     return [r["column_name"] for r in rows]
 
-# --- Get hierarchical structure and table list ---
+# --- UI Layout ---
 table_tree, all_fq_tables = get_hierarchical_table_map()
 
-# --- Widen multiselect dropdown ---
+# CSS: widen multiselect
 st.markdown("""
     <style>
     .stMultiSelect > div > div {
@@ -72,26 +84,20 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# --- Optional filter ---
+# Filter input
 filter_text = st.text_input("🔍 Filter tables (by name, db, or schema)", "")
+filtered_tables = [t for t in all_fq_tables if filter_text.lower() in t.lower()]
 
-flat_table_options = []
-for db, schemas in table_tree.items():
-    for schema, tables in schemas.items():
-        for fq in tables:
-            if filter_text.lower() in fq.lower():
-                flat_table_options.append(fq)
-
-# --- Table selection ---
+# Table selection
 selected_tables = st.multiselect(
-    "Select up to 6 fully qualified tables (db.schema.table)",
-    flat_table_options,
+    "Select up to 6 tables (fully qualified)",
+    filtered_tables,
     default=st.session_state.get("selected_tables", []),
     max_selections=6,
     key="selected_tables"
 )
 
-# --- Summary Display ---
+# Table summary ---
 if selected_tables:
     st.markdown("### ✅ Selected Tables Summary")
     st.dataframe(
@@ -103,21 +109,22 @@ if selected_tables:
         hide_index=False
     )
 
-# --- Query type ---
-query_type = st.selectbox(
-    "Query type", ["SIMPLE COUNT", "MINUS", "LEFT JOIN", "HASH JOIN"],
-    index=None, key="query_type"
-)
+# Query type
+query_type = st.selectbox("Query type", ["SIMPLE COUNT", "MINUS", "LEFT JOIN", "HASH JOIN"], index=None)
 
-# --- Join key (only for LEFT JOIN) ---
-join_key = None
+# Per-table join key input
+table_join_keys = {}
 if query_type == "LEFT JOIN" and selected_tables:
-    example_table = selected_tables[0]
-    join_key_options = get_columns_fq(example_table)
-    join_key = st.selectbox("Join key", join_key_options, index=None, key="join_key")
+    st.markdown("### 🔑 Join Keys Per Table")
+    for table in selected_tables:
+        with st.expander(f"Join Key(s) for `{table}`"):
+            options = get_columns_fq(table)
+            keys = st.multiselect(f"Select join key(s) for {table}", options, key=f"join_key_{table}")
+            if keys:
+                table_join_keys[table] = keys
 
-# --- Benchmark function ---
-def benchmark_table(fq_table, query_type, join_key, trials=3):
+# Benchmark function
+def benchmark_table(fq_table, query_type, join_keys=None, trials=3):
     db, schema, table = fq_table.split(".")
     full_table = f"{db}.{schema}.{table}"
 
@@ -131,11 +138,14 @@ def benchmark_table(fq_table, query_type, join_key, trials=3):
             )
         """
     elif query_type == "LEFT JOIN":
+        if not join_keys:
+            raise ValueError(f"No join keys for table: {fq_table}")
+        join_clause = " AND ".join([f"t1.{k} = t2.{k}" for k in join_keys])
+        null_filter = " AND ".join([f"t2.{k} IS NULL" for k in join_keys])
         query = f"""
             SELECT COUNT(*) FROM {full_table} t1
-            LEFT JOIN {full_table} t2
-              ON t1.{join_key} = t2.{join_key}
-            WHERE t2.{join_key} IS NULL
+            LEFT JOIN {full_table} t2 ON {join_clause}
+            WHERE {null_filter}
         """
     elif query_type == "HASH JOIN":
         query = f"""
@@ -153,18 +163,36 @@ def benchmark_table(fq_table, query_type, join_key, trials=3):
     durations = []
     for _ in range(trials):
         start = time.time()
-        _ = session.sql(query).collect()
+        session.sql(query).collect()
         end = time.time()
         durations.append(end - start)
 
-    avg_duration = round(sum(durations) / trials, 2)
-    return avg_duration
+    return round(sum(durations) / trials, 2)
 
-# --- Session state ---
+# Log benchmark result to Snowflake
+def log_result_to_snowflake(row):
+    try:
+        insert_sql = f"""
+            INSERT INTO BENCHMARK_LOGS (
+                timestamp, table_name, row_count, query_type, join_key, duration_s
+            ) VALUES (
+                TO_TIMESTAMP('{row["timestamp"]}'), 
+                '{row["table_name"]}', 
+                {row["row_count"]}, 
+                '{row["query_type"]}', 
+                '{row["join_key"].replace("'", "''")}', 
+                {row["duration_s"]}
+            )
+        """
+        session.sql(insert_sql).collect()
+    except Exception as e:
+        print(f"Warning: Failed to log result for {row['table_name']}: {e}")
+
+# Session State ---
 if "stop_benchmark" not in st.session_state:
     st.session_state.stop_benchmark = False
 
-# --- Side-by-side buttons ---
+# Control Buttons ---
 col1, col2 = st.columns(2)
 with col1:
     run_clicked = st.button("🚀 Run Benchmark")
@@ -173,38 +201,41 @@ with col2:
     if stop_clicked:
         st.session_state.stop_benchmark = True
 
-# --- Run Benchmark ---
+# Benchmark Execution ---
 if run_clicked and selected_tables:
     st.session_state.stop_benchmark = False
     results = []
     for fq_table in selected_tables:
         if st.session_state.stop_benchmark:
-            st.warning("Benchmark stopped by user.")
+            st.warning("Benchmark stopped.")
             break
         with st.spinner(f"Benchmarking {fq_table}..."):
             try:
-                duration = benchmark_table(fq_table, query_type, join_key)
+                join_keys = table_join_keys.get(fq_table) if query_type == "LEFT JOIN" else None
+                duration = benchmark_table(fq_table, query_type, join_keys)
                 row_count = session.table(fq_table).count()
-                results.append({
-                    "Table": fq_table,
-                    "Row Count": row_count,
-                    "Query Type": query_type,
-                    "Join Key": join_key or "",
-                    "Duration (s)": duration
-                })
+                join_key_str = ", ".join(join_keys) if join_keys else ""
+                row = {
+                    "timestamp": datetime.now(),
+                    "table_name": fq_table,
+                    "row_count": row_count,
+                    "query_type": query_type,
+                    "join_key": join_key_str,
+                    "duration_s": duration
+                }
+                results.append(row)
+                log_result_to_snowflake(row)
             except Exception as e:
-                st.error(f"Error benchmarking {fq_table}: {e}")
+                st.warning(f"Skipped {fq_table} due to an error.")
+                print(f"[ERROR] Benchmarking failed for {fq_table}:", e)
                 continue
 
     if results:
         df_results = pd.DataFrame(results)
-        st.subheader("Benchmark Table")
+        st.subheader("📊 Benchmark Results")
         st.dataframe(df_results, use_container_width=True)
-
-        st.subheader("Benchmark Duration Chart")
-        chart_data = df_results[["Row Count", "Duration (s)"]].set_index("Row Count")
-        st.line_chart(chart_data)
-
         st.download_button("Download CSV", df_results.to_csv(index=False), "benchmark_results.csv")
-else:
-    st.info("Select table(s) and click ***Run Benchmark***.")
+
+        st.subheader("📈 Duration Trend")
+        trend = df_results[["table_name", "duration_s"]].set_index("table_name")
+        st.bar_chart(trend)
