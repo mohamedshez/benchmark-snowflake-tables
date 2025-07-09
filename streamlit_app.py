@@ -59,6 +59,14 @@ selected_schema = st.selectbox("Select Schema", schemas, index=None, key="select
 
 # Table selection
 tables = get_tables(selected_db, selected_schema) if selected_db and selected_schema else []
+previous_selected_tables = [
+    t for t in st.session_state.get("selected_tables", []) if t in tables
+]
+
+# If no valid selections remain, reset the session state for selected_tables
+if not previous_selected_tables and st.session_state.get("selected_tables"):
+    st.session_state["selected_tables"] = []
+
 selected_tables = st.multiselect(
     "Select up to 6 tables", tables,
     default=st.session_state.get("selected_tables", []),
