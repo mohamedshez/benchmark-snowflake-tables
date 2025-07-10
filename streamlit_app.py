@@ -34,8 +34,11 @@ ensure_benchmark_logs_table()
 
 st.title("Snowflake Benchmark App ⚡")
 st.write("""
-Benchmark up to 6 Snowflake tables using `SIMPLE COUNT`, `MINUS`, `LEFT JOIN`, or `HASH JOIN`.  
-Select the `Query type` and `Join key`, then view results and trends.
+Benchmark up to 6 Snowflake tables using `SIMPLE COUNT`, `MINUS`, `LEFT JOIN`, or `HASH JOIN` query types.  
+Steps to use the app:  
+1️⃣ : Filter by name (string) - Database, schema or table. (optional)  
+2️⃣ : Select or search from the dropdown list.  
+3️⃣ : Select the `Query type` and `Join key`, then click '🚀 Run Benchmark' to view results and trends. To Stop the benchmark, click '🛑 Stop Benchmark'.  
 """)
 st.markdown("""
 **Query Types Explained**  
@@ -93,13 +96,13 @@ st.markdown("""
 
 # Filter input
 fq_table_names = get_all_accessible_fq_tables()
-filter_text = st.text_input("🔍 Filter tables (by name, db, or schema)", "")
+filter_text = st.text_input("🔍 Filter tables (by name - db, schema, or table) and **Press `ENTER` (optional):**", "")
 filtered_tables = [t for t in fq_table_names if filter_text.lower() in t.lower()]
 valid_selected_tables = [t for t in st.session_state.get("selected_tables", []) if t in filtered_tables]
 
 # Table selection
 selected_tables = st.multiselect(
-    "Select up to 6 tables (fully qualified)",
+    "👆🏼 Select up to 6 tables * :",
     filtered_tables,
     default=valid_selected_tables,
     max_selections=6,
@@ -119,7 +122,7 @@ if selected_tables:
     )
 
 # Query type
-query_type = st.selectbox("Query type", ["SIMPLE COUNT", "MINUS", "LEFT JOIN", "HASH JOIN"], index=None)
+query_type = st.selectbox("❓ Query type * :", ["SIMPLE COUNT", "MINUS", "LEFT JOIN", "HASH JOIN"], index=None)
 
 # Per-table join key input
 table_join_keys = {}
@@ -128,7 +131,7 @@ if query_type == "LEFT JOIN" and selected_tables:
     for table in selected_tables:
         with st.expander(f"Join Key(s) for `{table}`"):
             options = get_columns_fq(table)
-            keys = st.multiselect(f"Select join key(s) for {table}", options, key=f"join_key_{table}")
+            keys = st.multiselect(f"🎯 Select join key(s) for {table}:", options, key=f"join_key_{table}")
             if keys:
                 table_join_keys[table] = keys
 
