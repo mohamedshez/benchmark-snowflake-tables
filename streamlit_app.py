@@ -1,5 +1,4 @@
 import streamlit as st
-from snowflake.snowpark.context import get_active_session
 from utils.connection_utils import connect_to_snowflake
 import pandas as pd
 import time
@@ -7,7 +6,7 @@ from datetime import datetime
 
 st.set_page_config(page_title="Snowflake Benchmark App ⚡", layout="wide")
 
-# --- Connect to Snowflake ---
+# Connect to Snowflake ---
 with st.spinner("Connecting to Snowflake..."):
     session = connect_to_snowflake()
 
@@ -46,24 +45,35 @@ st.markdown("""
 - **HASH JOIN**: Hashes and compares rows — good for detecting any content-level changes.
 """)
 
-# --- Metadata utilities ---
-@st.cache_data
-def get_hierarchical_table_map():
-    rows = session.sql("""
-        SELECT table_catalog AS db, table_schema AS schema, table_name
-        FROM information_schema.tables
-        WHERE table_type = 'BASE TABLE'
-        ORDER BY db, schema, table_name
-    """).collect()
+# Metadata fetching ---
+@st.cache_data(ttl=3600)
+def get_all_accessible_fq_tables():
+    try:
+        db_rows = session.sql("SHOW DATABASES").collect()
+        dbs = [r["name"] for r in db_rows if not r["name"].upper().startswith("SNOWFLAKE")]
+    except Exception as e:
+        st.error(f"❌ Failed to fetch databases: {e}")
+        return []
 
-    tree = {}
     fq_list = []
-    for r in rows:
-        db, schema, table = r["DB"], r["SCHEMA"], r["TABLE_NAME"]
-        fq = f"{db}.{schema}.{table}"
-        fq_list.append(fq)
-        tree.setdefault(db, {}).setdefault(schema, []).append(fq)
-    return tree, fq_list
+    for db in dbs:
+        try:
+            rows = session.sql(f"""
+                SELECT table_catalog AS db, table_schema AS schema, table_name
+                FROM {db}.information_schema.tables
+                WHERE table_type IN ('BASE TABLE', 'VIEW')
+            """).collect()
+
+            for r in rows:
+                fq = f"{r['DB']}.{r['SCHEMA']}.{r['TABLE_NAME']}"
+                fq_list.append(fq)
+
+        except Exception as e:
+            # Skip databases you can't access
+            st.warning(f"⚠️ Skipping {db} — {e}")
+            continue
+
+    return fq_list
 
 @st.cache_data
 def get_columns_fq(fq_table_name):
@@ -71,10 +81,7 @@ def get_columns_fq(fq_table_name):
     rows = session.sql(f"SHOW COLUMNS IN {db}.{schema}.{table}").collect()
     return [r["column_name"] for r in rows]
 
-# --- UI Layout ---
-table_tree, all_fq_tables = get_hierarchical_table_map()
-
-# CSS: widen multiselect
+# CSS: widen multiselect - UI Layout ---
 st.markdown("""
     <style>
     .stMultiSelect > div > div {
@@ -85,8 +92,9 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # Filter input
+fq_table_names = get_all_accessible_fq_tables()
 filter_text = st.text_input("🔍 Filter tables (by name, db, or schema)", "")
-filtered_tables = [t for t in all_fq_tables if filter_text.lower() in t.lower()]
+filtered_tables = [t for t in fq_table_names if filter_text.lower() in t.lower()]
 valid_selected_tables = [t for t in st.session_state.get("selected_tables", []) if t in filtered_tables]
 
 # Table selection
@@ -193,7 +201,6 @@ def log_result_to_snowflake(row):
 if "stop_benchmark" not in st.session_state:
     st.session_state.stop_benchmark = False
 
-# Control Buttons ---
 col1, col2 = st.columns(2)
 with col1:
     run_clicked = st.button("🚀 Run Benchmark")
