@@ -34,14 +34,14 @@ ensure_benchmark_logs_table()
 
 st.title("Snowflake Benchmark App ⚡")
 st.write("""
-Benchmark up to 6 Snowflake tables using `SIMPLE COUNT`, `MINUS`, `LEFT JOIN`, or `HASH JOIN` query types.  
+Benchmark up to 6 Snowflake tables using `SIMPLE COUNT`, `MINUS`, `LEFT JOIN`, or `HASH JOIN` query type.  
 Steps to use the app:  
-1️⃣ : Filter by name (string) - Database, schema or table. (optional)  
+1️⃣ : Filter by name (string) - database, schema or table. (optional)  
 2️⃣ : Select or search from the dropdown list.  
 3️⃣ : Select the `Query type` and `Join key`, then click '🚀 Run Benchmark' to view results and trends. To Stop the benchmark, click '🛑 Stop Benchmark'.  
 """)
 st.markdown("""
-**Query Types Explained**  
+**Query types explained**  
 - **SIMPLE COUNT**: Measures raw scan performance by counting all rows in a table.  
 - **MINUS**: Returns rows from the first table that are not in the second — useful for detecting mismatches.  
 - **LEFT JOIN**: Finds unmatched rows using join keys — great for change detection.  
