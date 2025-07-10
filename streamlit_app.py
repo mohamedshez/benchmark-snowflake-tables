@@ -122,7 +122,7 @@ if selected_tables:
     )
 
 # Query type
-query_type = st.selectbox("❓ Query type * :", ["SIMPLE COUNT", "MINUS", "LEFT JOIN", "HASH JOIN"], index=None)
+query_type = st.selectbox("❓ Query type * :", ["SIMPLE COUNT", "MINUS", "LEFT JOIN", "HASH JOIN"], index=1, key="query_type")
 
 # Per-table join key input
 table_join_keys = {}
@@ -237,8 +237,7 @@ if run_clicked and selected_tables:
                 results.append(row)
                 log_result_to_snowflake(row)
             except Exception as e:
-                st.warning(f"Skipped {fq_table} due to an error.")
-                print(f"[ERROR] Benchmarking failed for {fq_table}:", e)
+                st.error(f"Skipped {fq_table} due to an error. Please select the query type and try again.")
                 continue
 
     if results:
