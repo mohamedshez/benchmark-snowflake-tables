@@ -36,7 +36,7 @@ Create a `.streamlit/secrets.toml` file with your Snowflake credentials:
 [snowflake]
 account  = "123"
 authenticator = "externalbrowser"
-user     = "abc@diaceutics.com"
+user     = "abc@email.com"
 password = "12345"
 role     = "DEVELOPER"
 database = "RESEARCHER"
